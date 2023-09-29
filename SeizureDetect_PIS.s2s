@@ -1,0 +1,405 @@
+'Created by E Matthews, April 2019
+'This script is meant to 1) find the StDev of a cursor defined region of the power spectrum, then 2) use Active cursor mode to search along the 
+'power spectrum for seizures. User is able define a multiple of the SD and a duration for events then indivicually inspects to accept or reject the found events. 
+'When accepted, the cursor position (both time of day and seconds), duration and power of the event is written to the log.
+'Output should be a list of times (start/end in seconds, total duration, time of day, counter number, and power (area)) where seizures occured.
+'March 2020
+'Modified to include a step for checking for a post-ictal suppression within 90s of the threshold crossing found by the Active cursor
+'May 2020
+'Modified to improve definition of seizure start. Search threshold criteria can be quite larege (10SD+mean); seizure start time now defined more conservatively from seziure center.
+'May 2023
+'Modified to search for the end of the seizure from the left (backwards search). This gives a more accurate measure of seizure duration in cases of waxing/waining activity
+
+'----------------------------------------------
+
+#include "ghutils.s2s"                                  ' give access to library of script functions (e.g. Newsflash(),FindView(0 and AddScriptBarBtn%())
+
+'----------------------------------------------
+
+var Vch%, DCh%, DCh$, Ch$, Ch%, Title$;                 ' Variables and strings for the virtual (VCh), Data (Ch) and Duplicate (DCh) channels
+var AnimalID$, TimeOfDay$;
+var data%;                                              ' currently open file
+var Btn%;                                               ' User selected Quit
+var List%[1], nCh%;                                     ' List of channels in the file
+var Csr1XPos;                                           ' X position of cursor 1 
+var StDev$, Mean$;
+var sdev, mean, Multi, Thold, LowThold, elevate;        ' receives the st. deviation, calculates Threshold (currently set to 2.5SD), and delay
+var clearlogchk%;
+var ok%:=1,stime,etime,fn$;
+var item1%, item2%, sumseizures%;
+var Event%;                                             ' To tell whether an active cursor search was successful. 1 means event found, 0 means no event found
+var cut%, CurrentView%[3];                              ' To determine whether the seizures should be saved as separate files (occasionally useful)
+var XStartS, XStartTime;
+var XEndS, XEndTime;
+var Counter%, Duration, EventPwr, NormPwr, BslnPwr;
+var s, day%, hour%, min%;                               ' For converting File time to time of day
+var Test$, test%;                                       ' Testing variables to be deleted later
+
+'------------------------------------------------
+
+'Check that the open file has data, if not, open file.
+data% := FrontView();                                   ' Check that current view is a data file
+    if ViewKind(data%) <> 0 then
+        Message("Current view is not a time-data view\nPlease open a data file");    
+        data%:= FileOpen("",0,1);                       ' Prompt user to open file if not
+        if data% < 0 then
+            Message("Unable to open a data file!");
+            Halt;
+        endif;                                          ' If unable to open a file, halt script
+    endif;
+ChanSelect(-1, 0);                                      ' Unselect all channels
+nCh%:=ChanList(list%[]);                                ' Count all channels
+resize List%[nch%];
+ChanList(list%[], 2097152);                                ' List all channels that are not virtual
+
+
+While ok% > 0 do
+'Ask the user to select the virtual channel (created with Pwr Spec script) to scan.  **This needs to be in a loop to allow the user to
+  ' analyze several animals in one session.
+DlgCreate("Animal Selection");                          ' Dialog to set channel
+DlgAllow(511, 0);    
+DlgChan(1, "Select channel of animal with seizures",512+4096+16384); ' Selects only virtual channels (+RealWave-time view-duplicates)
+DlgButton(2, "Done", QuitButton%);
+DlgShow(Vch%);
+Title$ := ChanTitle$(Vch%);
+TrimRight(Title$);   
+    
+' Display the selected Data Channel, the Duplicate of that channel, and the virtual channel (pwr spectrum)
+    ChanHide(-1);                                       ' Hide all channels
+    ChanShow(VCh%);                                     ' Show the selected virtual channel
+        if ChanKind(1) = 3 then
+            ChanShow(1);                                ' If Channel 1 is an Event+ channel, show the counter channel For data from other systems, Channel1 may contain EEG data
+        endif
+    Ch$ := Title$;
+    if InStr(Ch$, "clean") = 0 then
+        TrimLeft(Ch$, "Pwr ");
+    else 
+       TrimLeft(Ch$, "clean Pwr "); 
+    endif   
+    Ch% := Val(Ch$);  
+    ChanShow(Ch%);
+    AnimalID$:=ChanTitle$(Ch%);                         ' Title string containing animal number
+    TrimLeft(AnimalID$, "f.");
+    DCh% := DupChan(Ch%, 1);                            ' Returns the channel number of the duplicate    
+    ChanShow(DCh%);
+    
+   
+
+'Next ask user to set cursors 1 and 2 in a baseline region with at least 30 minutes of data.
+Repeat
+Btn% := Interact("Place Cursor 1 (Ctrl 1) in a clear baseline region. Cursor 2 will be placed 30 mins later, so find a clear space!", 128, 0, "Finished")
+    
+Until Btn% = 1;                                         ' "Finished" is pressed
+
+'Error checking
+if CursorExists(1)=0 then 
+    NewsFlash("Error|Cursor 1 not found.",2.5,80,5,0);  
+    halt
+else
+    Csr1XPos := Cursor(1);
+endif;
+
+
+if CursorExists(2)= 0 then
+    CursorNew(Csr1XPos+1800);    
+else
+    Cursor(2, Csr1XPos+1800);
+endif;
+
+
+'Do StDev & Mean calculation
+sdev := ChanMeasure(VCh%,12, Cursor(1), Cursor(2));
+    StDev$:=Str$(sdev);    
+mean := ChanMeasure(VCh%, 2, Cursor(1), Cursor(2));  
+    Mean$:=Str$(mean);
+    
+'Start active cursor search, open user dialog to set the channel, Threshold level and delay time for the search
+clearlogchk%:=0;                                        ' Set the Log check box default to 'unchecked'    
+    
+DlgCreate(Print$("Set up Active Cursor Parameters"),0,10);
+DlgText("Start time", 2, 1);
+DlgXValue(1,12);
+DlgReal(2,"Multiplier|Multiple of the StDev for Threshold",1.0, 10.0);	
+DlgReal(3,"Time required above Threshold|usually 10s", 5, 30, 0);
+    DlgText("St. Dev is:", 0,4);
+    DlgText(StDev$, 10,5); 
+    DlgText("Mean is:", 20, 4);
+    DlgText(Mean$, 30, 5);
+DlgCheck(4,"Clear log beforehand",2, 6);
+DlgShow(stime,Multi,elevate,clearlogchk%);
+Thold := (Multi * sdev)+ mean;
+
+if clearlogchk% then
+    PrepareLog(0,20);                                   ' option to clear the log before adding more results, if check box has been ticked
+endif
+
+
+'Set cursor properties for search, and position cursor 0 at start indicated by user.
+CursorVisible(0,1);                                     ' make cursor 0 visibile    
+CursorLabel(4,0,"Searching...");                        ' Label cursor ) as the searching one
+CursorLabelPos(0, 82.6498);                             ' Position label.  May not be helpful
+Cursor(0, stime);                                       ' Fetch the cursor to the start time
+Event%:=1;                                              ' Need to reset this to 1; it gets set to 2 at the end of a successful search to exit the Active Cursors loop.
+    
+'Begin Search loop
+While Event% >0 do
+CursorActive(0,7, VCh%, 0, "", "", Thold, 0, elevate);  ' Rising threshold search to find events
+CursorSearch(0); 
+Event% := CursorValid(0);                               ' Returns 1 if the previous search was successful, returns 0 if no success, loop exits.        
+'April 2020: Inserted if statement here to check for post-ictal suppression. If no suppression is found in 90s following this threshold, then 
+'event is automatically rejected. If suppression is found, user still has to approve seizure.
+        
+        if Event% = 1 then
+            
+            TestPIS()
+                       
+        endif        
+        
+    ' Begin Accept/Reject loop    
+    While Event% = 1 do
+        FrontView(data%);
+        XRange(Cursor(0)-(XHigh()-XLow())/2);           ' Shift the view to the newly found event.
+
+        item1% := 0;        
+        DlgCreate("Searching for seizures", 0,20);
+        DlgAllow(511, 0, DlgCh%);                       ' allow cursor dragging, window resizing
+        DlgButton(1,"Accept seizure", Work%);           ' Executes the function Work% (below); returns to the outer While loop after Work% is done.
+        DlgButton(2, "Reject seizure");                 ' Exits this while loop, continues searching
+        DlgButton(3, "Quit", QuitButton%);              ' Quits the whole script. 
+        DlgButton(4, "Accept-Cut", Work%);              ' Sets the variable cut% to 4, so that the loop for cutting the seizure is activated
+        cut%:= DlgShow(item1%);
+            
+'August 2020: added variable cut% to the accept/reject dialog so that the user can cut out the seizure as a separate file.
+        if cut% = 4 then
+        ChanList(CurrentView%[], 2048);                 ' Exclude hidden channels   
+        ExportChanList(1);                              ' Initialise the channel list
+        ExportChanList(XStartS-90, XEndS+90, CurrentView%[]);
+        FileSaveAs("",0,0,"",32,2);                     ' Export and set number of channels
+        endif            
+                
+            
+        sumseizures% := sumseizures% + item1%;
+ 
+        event%:=2;                                      ' Event needs to be set to a number >0 to stay in the search loop, but not 1, to exit the Accept/Reject loop.
+    wend;
+    
+wend;
+    
+    DlgCreate("Select another animal?");
+    DlgButton(1, "New animal");
+    DlgButton(3, "Save Log & Quit", SaveButton%);
+    ok% := DlgShow(); 
+
+wend;
+
+
+halt;
+
+
+'------------------------------------------------------
+func Work%()                                            ' This function will do the task of writing the cursor info to the log. Important info is: time of day, time in seconds, Duration of seizure, Seizure power (area of power)
+item1% := 1;                                            ' Increase the Seizure Count by 1
+XStartS := Cursor(0);
+LowThold := mean + sdev;
+
+'Calculate the time of day from the cursor position and file start time
+FileTimeDate(s);
+s := s + Cursor(0);
+day% := Floor(s/86400);
+s := s - (day% * 86400);
+hour% := Floor (s / 3600);
+s := s - hour% * 3600;
+min% := Floor(s /60);
+TimeOfDay$ := Str$(day%, 2)+":"+Str$(hour%,2)+":"+Str$(min%,2);
+
+'May 2020: insert step to back up the search cursor and find the "true" start of the seizure. Search threshold can be defined by user. True start is at 1SD+Mean above.
+'move cursor(0) back by XXX distance, begin search again, with hard coded threshold....
+
+Cursor(0, XStartS-15);                                            ' Move cursor back by 15 seconds
+CursorActive(0, 7, VCh%, 0, "", "", LowThold, 0, 5);    ' Rising threshold search to find events
+CursorSearch(0); 
+
+XStartS := Cursor(0);
+
+
+'Find the end of the seizure.... 5/30/2023: This fails when there is a 'pause' in the middle of the seizure. See for example data from YZ 03-27-23. Maybe need to jump Cursor(0) forward ~2 min and search backwards
+'to find the level crossing that defines the end of the seizure.... Note: PIS detection, at least on this example is still working because the pause has suppression, but the seizure re-emerges.
+Cursor(0, XStartS+90);
+                ' Old code for finding end of seizure: CursorActive(0,8, VCh%, 0, "", "", LowThold, 0, elevate); 'Falling threshold search, using lower threshold (1SD + mean), duration of "elevate" 
+                ' Changed to rising threshold when combined with backward search in next line
+CursorActive(0, 7, VCh%, 0, "", "", LowThold, 0, elevate/2);
+CursorSearch(-1);                                       ' Equivalent to Ctrl+Shift+> for forward search; set value to -1 to perform backward search
+FrontView(data%);
+XEndS:=Cursor(0);
+
+Duration:= XEndS - XStartS;
+
+EventPwr := ChanMeasure(VCh%, 1, XStartS, XEndS);       ' non-baseline normalized power for the event
+BslnPwr := ChanMeasure(VCh%, 1, Csr1XPos, Csr1XPos+Duration); ' Baseline power taken from user defined position for StDev
+NormPwr := EventPwr/BslnPwr;
+Counter% := ChanMeasure(1, 1, 0, XStartS);
+
+    if sumseizures% = 0 then
+    Printlog("Animal\t Counter\t Start (s)\t End (s)\t Time (d:h:m)\t Duration (s)\t Power\n");
+    endif
+
+
+
+Printlog("%s\t % 7.0f\t %7.2f\t %7.2f\t %s\t %7.2f\t %7.2f\n",AnimalID$,Counter%,XStartS, XEndS, TimeOfDay$, Duration, NormPwr);
+
+end;
+
+
+'func CutSeizureButton%()
+'var
+
+
+
+'end
+
+
+
+func SaveButton%()
+var Log1% := LogHandle();
+FrontView(Log1%);
+
+FileSaveAs("", 1);
+
+
+halt;
+end
+
+func QuitButton%()
+    halt;
+end
+
+func DlgCh%(item%)                                      ' react to changes in the main script dialog
+var en%:=1;
+
+if DlgValue(1)= 0 then                                  '                                      no gate channel selected
+	en%:=0;
+endif;
+DlgEnable(en%,2);                                       ' disable marker code selector if no gate channel
+if DlgValue(9) =0 then                                  ' plot to data file unchecked
+	DlgValue(10,0);                                         ' switch off overdrawn
+	DlgEnable(0,10);                                        ' and disable its checkbox
+else
+	DlgEnable(1,10);                                        ' enable overdraw checkbox
+endif;
+return 1;
+end;
+
+proc PrepareLog(x,y);                                   ' option to clear the log
+'x,y:	coordinates of top left corner of the Clear Log Query
+
+var vh%;                                                ' handle of the current view when the procedure is called
+
+var nchars%;
+var n%;
+
+vh%:=View();                                            ' remember the current view
+View(LogHandle());
+n%:=MoveBy(1,0);                                        ' return current position
+nchars%:=EditSelectAll();                               ' count characters in the log
+MoveTo(0,n%);                                           ' unselect and restore cursor to its previous position
+if nchars% > 2 and clearlogchk% then                    ' empty log returns value two (probably carriage return +line feed)
+	EditSelectAll();		
+	EditClear();                                            ' clear the log
+else
+	MoveTo(0,n%);                                           ' move text caret to the end of the current text
+endif;
+View(vh%);                                              ' leave view as we found it
+return;
+end;
+
+func TestPIS()
+
+'This code tests for the presence of a post-ictal suppression (PIS). We slide a 2s window along from the detected threshold crossing and calculate
+'maximum power in the 20-50Pwr trace in each window. Note: this window width determines the shortest PIS we can detect. PIS needs to be at least 2X the window.
+'There is no overlap in the sliding window. The maximum becomes quite low during suppression.
+'The array with max powers is sorted and the 3 lowest values (15 sec of suppression) are compared to the 3 highest values (15 sec of seizure). Right now, 
+'sufficient suppression is accepeted if the the mean of the 3 highest values (seizure max) is 10X greater than the mean of the 3 lowest (suppression min).
+   
+    var t%, td%, max%;
+    var j%, k%;
+    var IndexLow, IndexHi;
+    var IndexLow%, IndexHi%;
+    var TempMin, TempMax;
+    var PISlowestMean,PISHighestMean;
+    var PISCh%;
+    var PISPtCount%[1];                                 ' Don't know if I'll eventually want to look at the time points of the maxs??  Keep for now.
+    var PISMax[1];
+    var PISMaxLowest[3];
+    var PISMaxHighest[3];
+
+
+    t% := Cursor(0);
+    j% :=0;
+    td%:=2;                                 
+    k% := 90/td%;                                       ' Currently looking in a 90s window following seizure start
+    resize PISPtCount%[k%];
+    resize PISMax[k%];
+
+    While j% <= k%-1 do 
+        max% := ChanMeasure(VCh%, 8, t%, t%+td%);
+        PISPtCount%[j%]:=t%;
+        PISMax[j%]:=max%;
+        t% := t%+td%;
+        j% := j%+1;
+    wend
+            
+
+ArrSort(PISMax[],0, PISPtCount%[]);                     ' This sorts both arrays to list the minimum values of the SBIMax[] array first. These are the post-seizure suppression events!
+ArrConst(PISMaxLowest[], PISMax[]);
+PISlowestMean := ArrSum(PISMaxLowest[])/3;
+ArrRange(PISMaxLowest[], TempMin, TempMax);
+    if TempMax = TempMin then
+        IndexLow% := 1;
+    else
+        IndexLow := PISlowestMean/(TempMax-TempMin);
+        IndexLow%:= Round(IndexLow);
+    endif
+ArrSort(PISMax[], 1, PISPtCount%[]);
+ArrConst(PISMaxHighest[], PISMax[]);
+PISHighestMean := ArrSum(PisMaxHighest[])/3;
+ArrRange(PISMaxHighest[], TempMin, TempMax);            ' If there is a very large range in the 3 highest values, then Index will be zero (integer variable, rounds values less than 1 to 0)
+    if TempMax = TempMin then
+        IndexHi% := 1;
+    else
+        IndexHi := PISHighestMean/(TempMax-TempMin);
+        IndexHi%:= Round(IndexHi);
+    endif
+if IndexHi% = 0 or IndexLow% = 0 then
+    Event% :=2;
+    
+else 
+    if PISlowestMean <= PISHighestMean/10 then          ' We want the 3 lowest values to be << the 3 highest (PIS must be << Seizure)
+        Event% := 1                                     ' Ask user to accept event, post-ictal suppression most likely there.
+    
+    else
+        Event% := 2;                                    ' If no post-ictal suppression, not a seizure restart the active cursor search
+    endif   
+endif
+
+
+end
+
+
+
+
+'-------------------------------------------------------------------------------------------------------------------------------------------------
+'Old code dump.....
+'percentile:=0.10;         
+    ' SBICh% := ChanNew(6, 9, 0, td%);
+    ' ChanShow(SBICh%);
+    ' ChanScale(SBICh%, 6553);
+    ' ChanWriteWave(SBICh%, SBIMax[], 0);
+    ' Optimise(SBICh%);
+    
+    ' Taking the largest/smallest (depends on sort order above) values as an indicator of whether a seizure has occurred. Min is more reliable for presence of Post-ictal suppression
+    ' Index%:= k%*percentile;
+    ' resize SBIMaxPercentile[Index%];
+    ' ArrConst(SBIMaxPercentile[], SBIMax[]);    
+    ' SBIpercentMean := ArrSum(SBIMaxPercentile[])/Index%;
+    
+    

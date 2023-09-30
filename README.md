@@ -5,3 +5,6 @@ The approach and initial testing is under review for publication: A simple, auto
 
 There are accessory files that allow the user to apply filters to the raw data, visualize the sonogram of the EEG, or cut out individual animals from the data file. These are not required to run the seizure detection.
 
+Main File: SeizureDetect_PIS
+
+Supporting files: LowPassFilter. SonogramView, SplitAnimalFiles

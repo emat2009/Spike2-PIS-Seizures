@@ -1,0 +1,57 @@
+'Created by EAM Nov 2019
+'This script is designed to split recorded channels into multiple files with mice belonging to different studies. User is able to select mice to be moved to a new
+'file. New file will maintain channel numbers and info, so it duplicates the raw data file.
+
+'-----------------------------------------------------------------------
+
+#include "ghutils.s2s"                                  ' give access to library of script functions (e.g. Newsflash(),FindView(0 and AddScriptBarBtn%())
+
+'----------------------------------------------------------------------
+var CurFile%;                                           ' currently open file
+var Btn%, SelectedList%[1];       
+var ListData%[1];
+var mCh%;
+var ExportCh%, ListExport%[1];
+
+
+'-----------------------------------------------------------------------
+Message("You will be asked to open a file and then select individual channels for duplicating to a new file.\n You can select as many channels as needed. \n Remember to select both the raw data and the notch filtered channels.");
+CurFile%:=FileOpen("",0, 3);                            ' Opens user dialog to find file
+WindowVisible(3);
+
+ChanSelect(-1, 0);                                      ' Unselect all channels
+
+
+'Next ask user to select all channels to be extracted.
+Repeat
+    Btn% := Interact("Select all channels (animals) for export. Hold down the CTRL button to select multiple channels.", 2+64, 0, "Finished")
+    
+Until Btn% = 1;                                         ' "Finished" is pressed      
+
+
+
+ExportCh% := ChanList(SelectedList%[], 65536);          ' List all channels that are selected (above) plus the counter channel
+resize SelectedList%[ExportCh%+1];                      ' Increase array size to hold all channels plus channel count in element 0
+ChanList(SelectedList%[], 65536);                       ' Populate list for export with user selected channels plus the counter channel
+
+mCh%:= ChanList(ListExport%[], 2);                      ' List the counter channel. For some reason, adding the event channel to the ChanList command above didn't work.
+resize ListExport%[mCh%+ExportCh%+1];   
+ChanList(ListExport%[], 2);                             ' Add counter channel to Export list
+
+
+ChanList(ListExport%[], SelectedList%[], 1);            ' Add the elements that are common to both lists
+    
+    
+
+'List Data now contains the complete list of channels that need to be exported. First element is number of channels, other elements are channel numbers.
+
+    ExportChanList(1);                                  ' Initialise the channel list, 
+    ExportChanList(0, MaxTime(), ListExport%[]);
+    FileSaveAs("",0,0,"",100,2);                         ' Export and set number of channels
+
+
+    ChanSelect(-1, 0);
+halt;
+    
+'end
+

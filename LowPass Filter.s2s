@@ -1,0 +1,203 @@
+'Created by E Matthews Spring 2019
+'Purpose of this script is to preprocess acquired LFP data from multiple animals, and reduce file size. Original data files contain raw data and data with 60hz notch filter. User
+'has the cchoice to apply a 70hz LowPass filter to the notch filtered data, or just save the notch filtered data to a new file.  Output data file needs to be Waveform for Sonogram creation. 
+
+'Modified Jan 2021
+'Added check point to catch filtered data that had been dropped. If the f.xx channel is missing, it will generate an error message to alert the user. User
+'should use the Notch/LP filter protocol to refilter the data.
+
+'------------------------------------------------------
+var CurFile%, chan%, chaninfo$, kind%;       
+var nchan%, List%[1], i%;
+var curchan%, newchan%;
+var item%;                                              ' Variable to recieve output of user choice
+
+var DataCh%, ListData%[1];
+var mCh%;
+var ExportCh%, ListExport%[1];
+
+var flag%, flagList%[1], flagIDList$[1];
+'------------------------------------------------------
+
+Message("You will be asked to open a file and then select individual channels for filtering.\n You can open as many files as needed. \n Remember to save the files when you finish filtering.");
+CurFile%:=FileOpen("",0, 3);                            ' Opens user dialog to find file
+WindowVisible(3);
+
+nchan%:=ChanList(list%[]);                              ' Count all channels
+resize List%[nchan%];
+'kind% := ChanKind(2);                                   'Check the type of data - Raw data from EEG rig = RealWave, Filtered data from EEG rig = Waveform, imported from other systems = RealWave
+nchan% := ChanList(list%[], 512);
+
+
+'Commented out this code because it's a problem if the channels are intermingled between raw data from EEG (RealWave) and Filtered data from EEG (waveform). This happens when mice from different cohorts
+'are put on the rig by different users at different times. Code was originally added to make it more flexible for data collected on the Grass or Nicollet systems.
+'if kind% = 1 then
+'   nchan% := ChanList(list%[], 512);                       ' Count only channels that are RealWave
+'else
+'    nchan% :=ChanList(list%[], 1);                          'Count only channels that are Waveform
+'    
+'endif
+
+while CurFile% > 0 do
+    while chan% >=0 do
+    DlgCreate("Channel Selection");                     ' Start a user dialog
+    DlgButton(3, "Skip Filtering", ChannelExport%);     ' User wants to save notch filtered files and quit.    
+    DlgButton(2, "Done", QuitButton%);    
+    DlgButton(1, "Filter All", Filter%);                ' User allowed to select a channel
+    DlgShow(chan%, item%);    
+        ' Obsolete - changed so that all channels are filtered, if user selects filter. Feedback from EAS and KC said that they would prefer to filter all.
+        ' if (item% = 0) and (chan% > 0)then            'User has selected a valid channel and clicked OK
+                        
+         '   IIRCreate(-1, 0, 0, 10, 70);                'IIR Low pass Butterworth 70 Hz, tenth order
+         '   nchan% := IIRApply(-1, 0, chan%, 0.000000, MaxTime(), 1); 'Apply created filter to new channel
+         '   ChanShow(nchan%);                            'Show the result
+         '   ChanSelect(chan%, 1);                       'Select original channel
+         '   chaninfo$ := ChanTitle$(chan%);             'Assign the original channel title info to the string
+         '   ChanTitle$(nchan%, chaninfo$);              'Change newly created/filtered channel info to match original channel
+            
+        ' else break
+        ' endif
+    YRange(-2, -500, 500);                              ' Set y-axis of Visible channels
+    wend
+        ' ExportChanList();                              'Initialise the channel list, clear any other channels
+        ' ChanList(
+        ' ExportChanList(0, MaxTime(), 2001);        Saving does not currently work. Need to figure out the ChanList to
+        ' FileSaveAs("",0,0);                        pass the newly created memory channels
+    CurFile%:=FileOpen("",0, 3);
+wend
+
+Func Filter%()
+i% := 0;
+flag% := 0;                                             ' variable to catch missing data instances
+resize flagList%[nchan%];
+resize flagIDList$[nchan%];
+curchan%:= List%[1];                                    ' Get the first channel to filter from the list of Real Waves
+    While i% < nchan% do
+    IIRCreate(-1, 0, 0, 10, 70);                        ' IIR Low pass Butterworth 70 Hz, tenth order
+    newchan% := IIRApply(-1, 0, curchan%, 0.000000, MaxTime(), 1); ' Apply created filter to new channel
+        if (newchan% < 0) then                          ' Create a check point to show if the channel is incomplete. New chan will be negative if data is missing
+        flagList%[flag%] := curchan%;                    'Store channel number in a list for alerting the user.
+        flag% := flag% + 1;                             ' Increase flag by 1 for each channel that is missing. 
+        endif
+    
+    
+    ChanShow(newchan%);                                 ' Show the result
+    ChanSelect(curchan%, 1);                            ' Select original channel
+    chaninfo$ := ChanTitle$(curchan%);                  ' Assign the original channel title info to the string
+    ChanTitle$(newchan%, chaninfo$);                    ' Change newly created/filtered channel info to match original channel
+    ChanSelect(curchan%, 0);
+    ChanSelect(newChan%,1);    
+    i% := i% + 1;                                  
+    curchan% := List%[i% + 1];                          ' EAM changed to allow for non-sequential channel numbers
+    wend
+        if (flag% >0) then  
+        resize flagList%[flag%];  
+        resize flagIDList$[flag%];
+        i%:=0;
+            while i%< flag% do
+            ChanSelect(flagList%[i%], 1);                            ' Select original channel
+            chaninfo$ := ChanTitle$(flagList%[i%]);                  ' Assign the original channel title info to the string    
+            flagIDList$[i%] := chaninfo$;
+            i% := i% + 1 ;
+            wend
+    'Maybe insert code here to convert channel numbers to Animal IDs?
+        PrepareLog(0, 20);
+        PrintLog("Error(s) detected in channel(s): ", FlagIDList$[]);
+        PrintLog("Use the Notch/LP filter to refilter data");
+        DlgCreate("Error Detected! Check Log");             ' Start a user dialog
+        DlgButton(1, "Keep going, even with missing data");                     ' User wants to save what could be filtered    
+        DlgButton(2, "Uh oh! Quit!", QuitButton%);    
+        DlgShow();
+        endif
+
+
+YRange(-2, -500, 500);                                  ' Set y-axis of Visible channels
+
+'Now select the memory channels plus counter and export
+ChanSelect(1,1);                                        ' Faster way to include the counter channel in the export batch with the memory channels
+'Now need to identify only the memory channels, using the string match
+
+    ExportCh% := ChanList(ListExport%[], 65536);        ' List all channels that are selected (above) plus the counter channel
+    resize ListExport%[ExportCh%+1];                    ' Increase array size to hold all channels plus channel count in element 0
+    ChanList(ListExport%[], 65536);
+
+    
+
+'List Data now contains the complete list of channels that need to be exported. First element is number of channels, other elements are channel numbers.
+
+    ExportChanList(1);                                  ' Initialise the channel list, 
+    ExportChanList(0, MaxTime(), ListExport%[]);
+    FileSaveAs("",0,0,"",32,2);                         ' Export and set number of channels
+
+
+    ChanSelect(-1, 0);
+halt;
+
+halt;
+end
+
+Func QuitButton%()
+        halt;
+end
+
+Func ChannelExport%()
+' Save the Counter channel, and the 60hz notch filtered channels. These data channels will be RealWaves. THe Counter channel is always 1.
+
+
+'Need to convert to memory channels, copy channel info, then export. The memory channel step is important so that the exported file uses the lowest possible channel #s
+
+    DataCh% := ChanList(ListData%[], 512);              ' List all the RealWave channels, for conversion to memory channels
+    resize ListData%[DataCh%+1];                        ' Increase array to hold all channels plus count
+    ChanList(ListData%[], 512);                         ' Populate array with channel numbers
+    i% := 1;
+        While i%<(DataCh%+1) do
+            mCh% := MemChan(0, ListData%[i%]);          ' Create memory channel copying type
+            MemImport(mCh%, ListData%[i%], 0.0, MaxTime()); ' Copy data to the memory channel
+            ChanShow(mCh%);                             ' Make new channel visible
+            ChanSelect(mCh%,1);                         ' new channels are selected for later export
+            i% := i%+1;
+        wend
+
+    ChanSelect(1,1);                                    ' Faster way to include the counter channel in the export batch with the memory channels
+'Now need to identify only the memory channels, using the string match
+
+    ExportCh% := ChanList(ListExport%[], 65536);        ' List all channels that are selected (above) plus the counter channel
+    resize ListExport%[ExportCh%+1];                    ' Increase array size to hold all channels plus channel count in element 0
+    ChanList(ListExport%[], 65536);
+
+    
+
+'List Data now contains the complete list of channels that need to be exported. First element is number of channels, other elements are channel numbers.
+
+    ExportChanList(1);                                  ' Initialise the channel list, 
+    ExportChanList(0, MaxTime(), ListExport%[]);
+    FileSaveAs("",0,0,"",32,2);                         ' Export and set number of channels
+
+
+    ChanSelect(-1, 0);
+halt;
+    
+
+end
+proc PrepareLog(x,y);                                   ' option to clear the log
+'x,y:	coordinates of top left corner of the Clear Log Query
+
+var vh%;                                                ' handle of the current view when the procedure is called
+
+var nchars%;
+var n%;
+
+vh%:=View();                                            ' remember the current view
+View(LogHandle());
+n%:=MoveBy(1,0);                                        ' return current position
+nchars%:=EditSelectAll();                               ' count characters in the log
+MoveTo(0,n%);                                           ' unselect and restore cursor to its previous position
+if nchars% > 2 then                    ' empty log returns value two (probably carriage return +line feed)
+	EditSelectAll();		
+	EditClear();                                            ' clear the log
+else
+	MoveTo(0,n%);                                           ' move text caret to the end of the current text
+endif;
+View(vh%);                                              ' leave view as we found it
+return;
+end;

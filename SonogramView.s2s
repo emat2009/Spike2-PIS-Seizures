@@ -1,0 +1,81 @@
+'This script is meant to duplicate all EEG traces in a file and draw them in sonogram mode, and add a text channel that numbers the Counters. 
+'File should already be low pass filtered. 
+
+'---------------------------------------
+
+var CurFile%, chan%, nchan%, chanDup%, listVisible%[48];    
+var stCh%;                                              ' Stimulus channel
+var nCh%;                                               ' Number channel
+var sTime,eTime;                                        ' Time range
+var stims%;                                             ' Number of events in time range
+var i%;                                                 ' Counter
+var code%[4];                                           ' Code array for textmarks
+var stim$;                                              ' String to print to textmarks
+var stTime;                                             ' Event time
+var numbChan%;                                          ' Total number of channels
+var lst%[1];                                            ' Array with the number of channels
+var kind%;                                              ' Determine whether data is waveform or realwave
+
+'----------------------------------------
+
+CurFile%:=FileOpen("",0, 3);                            ' Opens user dialog to find file
+WindowVisible(3);
+'yRange(-1, -500,500);                                  'Optimize rather than scale to a set value
+Optimise(-1);
+
+while CurFile% > 0 do
+    nchan% := ChanList(listVisible%, 1+512);            ' Create an array listing the number of waveform and realwave channels  !!!!
+    kind% := ChanKind(1);                               ' Check channel kind for the first data channel.
+    
+    if kind%=1 then
+        for chan% := 1 to nchan% do                   ' Channel 1 is data for files imported from Grass Polyview or Nicolet.
+            chanDup% := ChanDuplicate(chan%);           ' Create a duplicate 
+            ChanShow(chanDup%);                         ' Make it visible
+            DrawMode(chanDup%, 9, 512, 1, 70, 70, 1, 0); ' Convert all visible channels to sonogram
+            yRange(chanDup%, 0, 70);                    ' Set y axis on sonogram to low pass filtered limit
+        next 
+    else 
+        for chan% := 2 to nchan%+1 do                   ' Channel 1 is always the counter channel, so start with 2
+            chanDup% := ChanDuplicate(chan%);           ' Create a duplicate 
+            ChanShow(chanDup%);                         ' Make it visible
+            DrawMode(chanDup%, 9, 1024, 1, 65, 70, 1, 0); ' Convert all visible channels to sonogram
+            yRange(chanDup%, 0, 70);                    ' Set y axis on sonogram to low pass filtered limit
+        next 
+     endif   
+    
+DlgCreate("Stimulus numbering");                        ' Dialog to set channel
+DlgChan(1, "Select stimulus channel",62);
+DlgShow(stCh%);
+ChanSelect(-1, 0);                                      ' Unselect all channels, to prevent reordering of channels selected when the button was pressed.
+    
+sTime := 0;                                             ' Hard code entire time range for seeking events
+eTime := MaxTime();                        
+stims% := Count(stCh%,sTime,eTime);                     ' Count events
+    
+if stims% > 0 then                                      ' If any events in time range
+    stTime := sTime;                        
+    nCh% := MemChan(8,6);                               ' Create memory channel
+    for i% := 1 to stims% do                            ' Steps through each event
+        stTime := NextTime(stCh%,stTime);               ' Get time
+        MemSetItem(nCh%,0,stTime,code%[],Str$(i%));     ' Add textmark with event number
+        next;
+    DrawMode(nCh%,14,2);                                ' Draw in text mode
+    ' ChanShow(nCh%);                         'Show channel
+    
+    numbChan% := ChanList(lst%, 0x4000);                ' Get number of channels, excluding duplicated channels
+    MemSave(nCh%, numbChan%+1, 8);                      ' Convert memory channel to a permanent one, +1 from the last numbered channel
+    DrawMode(numbChan%+1,14,2);                         ' Draw in text mode
+    ChanShow(numbChan%+1);        
+    ChanDelete(nCh%);                                   ' Delete memory channel
+    ChanSelect(numbChan%+1, 1);
+    ChanOrder(1, -1, -3);                               ' Move to bottom just above Ch1 (Counter)
+    ChanTitle$(numbChan%+1, "Counter #");               ' Rename channel    
+    
+    ChanSelect(numbChan%+1, 0);
+    
+    endif;
+    
+XRange(0, MaxTime());    
+halt;
+                                 
+wend
